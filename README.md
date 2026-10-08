@@ -1,115 +1,82 @@
-# Samaritan Asset Index
+# Samaritan Asset Index — Python Edition
 
-An end-to-end, real-time tactical reconnaissance and asset mapping platform. Samaritan establishes a live graph architecture that ingests external open-source intelligence (OSINT) via Certificate Transparency logs and maps local network proximity using Address Resolution Protocol (ARP) tables, visualizing infrastructure dependencies instantly via an interactive D3.js physics-directed engine.
+A reconnaissance asset-mapping tool rebuilt as a **pure-Python scientific-computing project** for the
+*Python for Scientific Computing (PSC)* course. The original Node.js / React / Neo4j stack
+(`RoG7eR/samairitan`) is replaced by NetworkX, NumPy, pandas, SciPy and Matplotlib, and a graph-analytics
+layer is added.
 
-## 🛠️ System Architecture
+> **Authorised use only.** The tool queries public Certificate Transparency logs, resolves DNS and reads the
+> local ARP cache. Run sweeps only against domains you own or that are in scope of a bug-bounty / audit programme.
 
-The platform bridges active network reconnaissance directly into a native graph database to capture infrastructure relationships (`OWNS`, `RESOLVES_TO`, `LOCAL_ADJACENCY`).
+![map](docs/network_map.png)
 
-- **Frontend:** React (Vite), D3.js (Force-directed physics simulation), Bootstrap / Custom Tactical CSS.
-    
-- **Backend:** Node.js, Express API, Native OS Utilities (`dns`, `child_process`).
-    
-- **Database:** Neo4j Graph Database (Cypher Query Language).
-    
+## What it does
 
-## 🚀 Deployment Guide
+| Feature | How it works | Python tools |
+|---|---|---|
+| Outbound OSINT sweep | crt.sh CT logs → unique subdomains → DNS lookup → `OWNS` / `RESOLVES_TO` edges | `requests`, `socket` |
+| Proximity scan | parses `arp -a` → `LOCAL_ADJACENCY` edges from a gateway node | `subprocess`, `re`, `ipaddress` |
+| Log parser | extracts a domain → IP pair from free-text intelligence | `re` |
+| Graph store | idempotent `MERGE` semantics, JSON persistence | `networkx.MultiDiGraph` |
+| **Analytics (new)** | degree/PageRank/betweenness, density, components, degree distribution, shared-infrastructure detection, blast radius, Laplacian spectrum | `numpy`, `pandas`, `scipy`, `networkx` |
+| Interactive map | force-directed layout, click-to-focus, Over-Watch filters, asset-profile panel | `matplotlib`, `numpy` |
+| Export | nodes / edges / metrics as CSV | `pandas` |
 
-### Prerequisites
+## Mapping from the original project
 
-- [Node.js](https://nodejs.org/ "null") (v18+ recommended)
-    
-- [Neo4j Desktop](https://neo4j.com/download/ "null") or Neo4j AuraDB (Cloud)
-    
+| Original (JS) | Python replacement |
+|---|---|
+| Neo4j + Cypher (`MERGE`, `MATCH`) | `samaritan/graph_store.py` (`AssetGraph`) |
+| `services/osint.js` | `samaritan/osint.py` |
+| `services/localScanner.js` | `samaritan/local_scanner.py` |
+| `services/parser.js` | `samaritan/parser.py` |
+| `routes/network.js` (REST API) | `samaritan/cli.py` (sub-commands) |
+| `ingest.js`, `ingest-live.js` | `ingest` and `sweep` commands |
+| React `App.jsx` (command bar, filters, profile) | `visualizer.py` widgets + `cli.py` flags |
+| D3 force simulation `NetworkMap.jsx` | `nx.spring_layout` + Matplotlib |
 
-### 1. Database Configuration
+## Install & run
 
-Ensure your Neo4j instance is running and set up an empty database. Take note of your connection URI, username, and password.
+```bash
+pip install -r requirements.txt
 
-### 2. Backend Setup
+python main.py demo                    # offline demo data (no network needed)
+python main.py stats                   # analytics report
+python main.py show                    # interactive window (click nodes, toggle filters)
+python main.py show --save map.png --focus 203.0.113.10 --no-domains
+python main.py export --out export     # nodes.csv, edges.csv, metrics.csv
 
-1. Clone or navigate to your repository and enter the backend directory:
-    
-    ```
-    cd backend
-    ```
-    
-2. Install the core dependencies:
-    
-    ```
-    npm install express neo4j-driver cors dotenv
-    ```
-    
-3. Create a `.env` file in the root of the `backend/` directory:
-    
-    ```
-    PORT=5000
-    NEO4J_URI=bolt://localhost:7687
-    NEO4J_USER=neo4j
-    NEO4J_PASSWORD=your_secure_password
-    ```
-    
-4. Fire up the backend engine:
-    
-    ```
-    node server.js
-    ```
-    
-
-### 3. Frontend Setup
-
-1. Navigate to the frontend directory:
-    
-    ```
-    cd ../frontend
-    ```
-    
-2. Install the visualization stack:
-    
-    ```
-    npm install d3 bootstrap
-    ```
-    
-3. Boot the React development server:
-    
-    ```
-    npm run dev
-    ```
-    
-4. Open your browser and point it to `http://localhost:5173`.
-    
-
-## 🎮 Tactical Capabilities
-
-| **Feature**              | **Execution Source**               | **Graph Impact**                                                                                |
-| ------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
-| **Outbound OSINT Sweep** | `crt.sh` CT Logs + Live DNS Lookup | Maps public subdomains and points them to their active resolving IP infrastructures.            |
-| **Proximity Scan**       | System ARP Cache Table (`arp -a`)  | Discovers active hardware assets sharing the immediate localized network domain.                |
-| **Adjacency Focus**      | D3 Node Trigger Engine             | Isolates selected nodes and highlights 1st-degree connections while dimming background noise.   |
-| **Over-Watch Filters**   | Dynamic React State Hooks          | Instantly drops or adds Asset Classifications from the visual layout without refreshing the DB. |
-
-## 📂 Project Directory Layout
-
+python main.py sweep example.org --limit 10   # live OSINT sweep (needs internet)
+python main.py local-sweep                    # ARP proximity scan
+python main.py ingest "Asset discovered: admin.target.com resolving to IP 192.0.2.5"
+python main.py reset
 ```
-samaritan-asset-index/
-├── backend/
-│   ├── config/
-│   │   └── db.js            # Neo4j connection pool setup
-│   ├── routes/
-│   │   └── network.js       # Core API endpoints (/network, /sweep, /local-sweep)
-│   ├── services/
-│   │   ├── osint.js         # External CT log gathering & DNS resolver
-│   │   └── localScanner.js  # OS-level local ARP cache scanner
-│   ├── server.js            # Express server initialization
-│   └── .env                 # System environment secrets
-└── frontend/
-    ├── src/
-    │   ├── components/
-    │   │   └── NetworkMap.jsx # Interactive D3.js canvas & physics map
-    │   ├── App.jsx          # Unified dashboard command center
-    │   └── main.jsx         # React application root DOM bridge
+Graph state is stored in `data/graph.json` (change with `--db path`).
+
+## Method notes
+
+* **Graph model.** Assets are nodes (`type`, `threat_level`); relationships are keyed edges, so inserting the
+  same relationship twice is a no-op, exactly like Cypher `MERGE`.
+* **Layout.** Fruchterman–Reingold (`spring_layout`) is run *per connected component* and the components are
+  tiled on a grid; one global simulation would repel disconnected pieces to infinity.
+* **Metrics.** The adjacency matrix **A** is built with NumPy; in/out-degree are column/row sums. PageRank and
+  betweenness rank which assets are structural hubs. `shared_infrastructure` groups hostnames by IP with pandas
+  `groupby` to expose single points of failure.
+* **Laplacian spectrum.** For the Laplacian **L = D − A** of the undirected graph, the multiplicity of the
+  eigenvalue 0 equals the number of connected components (verified in the unit tests).
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
 ```
+19 tests cover the parser, OSINT (with mocked network/DNS), ARP parsing for Linux/Windows output,
+`MERGE` idempotence, JSON round-trip, every analytics function and headless rendering.
 
-## 🛡️ License and Usage Note
-
-This software is built strictly for authorized security auditing, threat modeling, and educational target visualization. Ensure you possess explicit permission before running infrastructure-level reconnaissance sweeps against public entities.
+## Layout
+```
+main.py                  entry point
+samaritan/               models, parser, osint, local_scanner, graph_store, analytics, visualizer, cli, sample_data
+tests/test_samaritan.py
+docs/                    screenshots
+```
