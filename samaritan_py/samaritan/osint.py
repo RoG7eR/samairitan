@@ -6,6 +6,7 @@ Only run against domains you are authorised to assess (e.g. bug-bounty scope).
 from __future__ import annotations
 
 import socket
+import time
 from typing import Callable, List, Optional, Tuple
 
 import requests
@@ -13,13 +14,50 @@ import requests
 from .models import Asset, Relationship
 
 CRT_URL = "https://crt.sh/"
+CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
+RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 
-def fetch_ct_records(domain: str, timeout: int = 30) -> list:
-    """Query crt.sh for every certificate issued to *.domain."""
-    resp = requests.get(CRT_URL, params={"q": f"%.{domain}", "output": "json"}, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+def _get_json(url: str, params: dict, timeout: int, retries: int, log: Callable[[str], None]):
+    """GET with exponential back-off on timeouts / 5xx (crt.sh is frequently overloaded)."""
+    last: Exception = RuntimeError("no attempt made")
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout,
+                                headers={"User-Agent": "samaritan-asset-index/2.0"})
+            if resp.status_code in RETRY_STATUSES:
+                raise requests.HTTPError(f"{resp.status_code} from {resp.url}", response=resp)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            last = exc
+            if attempt < retries:
+                wait = 2 ** attempt
+                log(f"  [!] attempt {attempt}/{retries} failed ({exc.__class__.__name__}); retrying in {wait}s")
+                time.sleep(wait)
+    raise last
+
+
+def fetch_crtsh(domain: str, timeout: int = 60, retries: int = 3, log=print) -> list:
+    """crt.sh, asking only for unexpired + de-duplicated certs to keep the query small."""
+    params = {"q": f"%.{domain}", "output": "json", "exclude": "expired", "deduplicate": "Y"}
+    return _get_json(CRT_URL, params, timeout, retries, log)
+
+
+def fetch_certspotter(domain: str, timeout: int = 60, retries: int = 2, log=print) -> list:
+    """Fallback CT source (unauthenticated, rate-limited). Normalised to crt.sh's record shape."""
+    params = {"domain": domain, "include_subdomains": "true", "expand": "dns_names"}
+    data = _get_json(CERTSPOTTER_URL, params, timeout, retries, log)
+    return [{"name_value": "\n".join(item.get("dns_names", []))} for item in data]
+
+
+def fetch_ct_records(domain: str, log: Callable[[str], None] = print) -> list:
+    """Try crt.sh first, then fall back to Cert Spotter."""
+    try:
+        return fetch_crtsh(domain, log=log)
+    except (requests.RequestException, ValueError) as exc:
+        log(f"[!] crt.sh unavailable ({exc}). Falling back to Cert Spotter...")
+        return fetch_certspotter(domain, log=log)
 
 
 def extract_subdomains(records: list) -> List[str]:
