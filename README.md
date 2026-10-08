@@ -8,7 +8,7 @@ layer is added.
 > **Authorised use only.** The tool queries public Certificate Transparency logs, resolves DNS and reads the
 > local ARP cache. Run sweeps only against domains you own or that are in scope of a bug-bounty / audit programme.
 
-![map](samaritan_py\docs\network_map.png)
+![map](samaritan_py/docs/network_map.png)
 
 ## What it does
 
