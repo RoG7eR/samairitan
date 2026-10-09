@@ -36,6 +36,77 @@ def apply_filters(G: nx.MultiDiGraph, filters: dict) -> nx.MultiDiGraph:
     return G.subgraph([n for n, d in G.nodes(data=True) if keep(n, d)]).copy()
 
 
+def layout_components(view: nx.MultiDiGraph, seed: int = 42, aspect: float = 1.6) -> dict:
+    """Force-directed layout per connected component, tiled on a grid.
+
+    One global spring simulation would repel disconnected pieces to infinity,
+    so every component is laid out on its own and the results are packed in a grid whose
+    shape follows the canvas aspect ratio (width / height).
+    """
+    if view.number_of_nodes() == 0:
+        return {}
+    U = nx.Graph(view)
+    comps = sorted(nx.connected_components(U), key=len, reverse=True)
+    layouts = []
+    for comp in comps:
+        n = len(comp)
+        if n == 1:
+            layouts.append(({next(iter(comp)): np.zeros(2)}, 0.4))
+            continue
+        radius = 0.6 * np.sqrt(n) + 0.3
+        p = nx.spring_layout(U.subgraph(comp), k=1.5 / np.sqrt(n), iterations=300,
+                             seed=seed, scale=radius)
+        layouts.append((p, radius))
+    # shelf packing: components keep their own size, rows wrap at a width that matches the canvas shape
+    gap = 0.6
+    total = sum((2 * r + gap) ** 2 for _, r in layouts)
+    row_w = max(np.sqrt(total * aspect), 2 * layouts[0][1] + gap)
+    pos, x, y, row_h = {}, 0.0, 0.0, 0.0
+    for p, r in layouts:
+        w = 2 * r + gap
+        if x > 0 and x + w > row_w:
+            x, y, row_h = 0.0, y - row_h, 0.0
+        off = np.array([x + w / 2, y - w / 2])
+        for node, xy in p.items():
+            pos[node] = np.asarray(xy) + off
+        x += w; row_h = max(row_h, w)
+    return pos
+
+
+def render_graph(ax, V: nx.MultiDiGraph, pos: dict, focus=None, label_size: int = 7,
+                 empty_message: str = "NO ASSETS VISIBLE") -> None:
+    """Draw nodes, edges and labels on `ax` (shared by the CLI map and the GUI)."""
+    ax.clear(); ax.set_facecolor(BG); ax.axis("off")
+    if V.number_of_nodes() == 0:
+        ax.text(0.5, 0.5, empty_message, color=GREY, ha="center", va="center",
+                family="monospace", fontsize=11, transform=ax.transAxes, linespacing=1.8)
+        return
+    focus = focus if focus in V else None
+    near = {focus, *V.predecessors(focus), *V.successors(focus)} if focus else None
+    ids = list(V.nodes)
+
+    pairs = list({tuple(sorted((u, v))) for u, v in V.edges()})
+    segs = [(pos[u], pos[v]) for u, v in pairs]
+    hot = [focus is None or focus in (u, v) for u, v in pairs]
+    base = matplotlib.colors.to_rgb(CYAN)
+    rgba = [(*base, 0.6 if focus is None else (1.0 if h else 0.05)) for h in hot]
+    widths = [2 if focus is None else (3 if h else 1) for h in hot]
+    if segs:
+        ax.add_collection(LineCollection(segs, colors=rgba, linewidths=widths, zorder=1))
+
+    xy = np.array([pos[n] for n in ids])
+    elevated = np.array([V.nodes[n].get("threat_level") == "Elevated" for n in ids])
+    alpha = np.array([1.0 if near is None or n in near else 0.1 for n in ids])
+    colors = [matplotlib.colors.to_rgba(RED if e else CYAN, a) for e, a in zip(elevated, alpha)]
+    ax.scatter(xy[:, 0], xy[:, 1], s=np.where(elevated, 330, 170), c=colors,
+               edgecolors="white", linewidths=1.2, zorder=2)
+    for n, (x, y), a in zip(ids, xy, alpha):
+        ax.text(x, y, "  " + n, color=GREY, fontsize=label_size, alpha=max(a * 0.8, 0.05),
+                va="center", family="monospace", zorder=3)
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.margins(0.12)
+
+
 class NetworkMap:
     def __init__(self, G: nx.MultiDiGraph, filters: Optional[dict] = None,
                  focus: Optional[str] = None, seed: int = 42) -> None:
@@ -60,34 +131,7 @@ class NetworkMap:
 
     # ---- layout / state ------------------------------------------------
     def _relayout(self) -> None:
-        """Force-directed layout per connected component, packed on a grid.
-
-        Running one spring simulation over the whole graph lets disconnected pieces
-        repel each other to infinity, so each component is laid out on its own and
-        the results are tiled.
-        """
-        if self.view.number_of_nodes() == 0:
-            self.pos = {}
-            return
-        U = nx.Graph(self.view)
-        comps = sorted(nx.connected_components(U), key=len, reverse=True)
-        layouts = []
-        for comp in comps:
-            n = len(comp)
-            if n == 1:
-                layouts.append(({next(iter(comp)): np.zeros(2)}, 0.4))
-                continue
-            radius = 0.45 * np.sqrt(n) + 0.3
-            p = nx.spring_layout(U.subgraph(comp), k=1.5 / np.sqrt(n), iterations=300,
-                                 seed=self.seed, scale=radius)
-            layouts.append((p, radius))
-        cell = 2 * max(r for _, r in layouts) + 0.8
-        cols = int(np.ceil(np.sqrt(len(layouts))))
-        self.pos = {}
-        for i, (p, _) in enumerate(layouts):
-            off = np.array([(i % cols) * cell, -(i // cols) * cell])
-            for node, xy in p.items():
-                self.pos[node] = np.asarray(xy) + off
+        self.pos = layout_components(self.view, self.seed)
 
     def _build_filter_widget(self) -> None:
         self.labels = ["INFRASTRUCTURE (IPs)", "DOMAINS", "ELEVATED THREATS ONLY"]
@@ -127,41 +171,8 @@ class NetworkMap:
         self.draw()
 
     # ---- rendering -----------------------------------------------------
-    def _near(self, node: str) -> set:
-        return {node, *self.view.predecessors(node), *self.view.successors(node)}
-
     def draw(self) -> None:
-        ax, V = self.ax, self.view
-        ax.clear(); ax.set_facecolor(BG); ax.axis("off")
-        if V.number_of_nodes() == 0:
-            ax.text(0.5, 0.5, "NO ASSETS VISIBLE", color=GREY, ha="center", family="monospace",
-                    transform=ax.transAxes)
-            self._draw_info(); self.fig.canvas.draw_idle(); return
-
-        near = self._near(self.focus) if self.focus else None
-        ids = list(V.nodes)
-
-        # edges (one line per connected pair)
-        pairs = list({tuple(sorted((u, v))) for u, v in V.edges()})
-        segs = [(self.pos[u], self.pos[v]) for u, v in pairs]
-        hot = [self.focus is None or self.focus in (u, v) for u, v in pairs]
-        base = matplotlib.colors.to_rgb(CYAN)
-        rgba = [(*base, 0.6 if self.focus is None else (1.0 if h else 0.05)) for h in hot]
-        widths = [2 if self.focus is None else (3 if h else 1) for h in hot]
-        ax.add_collection(LineCollection(segs, colors=rgba, linewidths=widths, zorder=1))
-
-        # nodes
-        xy = np.array([self.pos[n] for n in ids])
-        elevated = np.array([V.nodes[n].get("threat_level") == "Elevated" for n in ids])
-        alpha = np.array([1.0 if near is None or n in near else 0.1 for n in ids])
-        colors = np.array([matplotlib.colors.to_rgba(RED if e else CYAN, a) for e, a in zip(elevated, alpha)])
-        ax.scatter(xy[:, 0], xy[:, 1], s=np.where(elevated, 330, 170), c=colors,
-                   edgecolors="white", linewidths=1.2, zorder=2)
-        for n, (x, y), a in zip(ids, xy, alpha):
-            ax.text(x, y, "  " + n, color=GREY, fontsize=7, alpha=max(a * 0.8, 0.05),
-                    va="center", family="monospace", zorder=3)
-        ax.set_aspect("equal", adjustable="datalim")
-        ax.margins(0.12)
+        render_graph(self.ax, self.view, self.pos, self.focus)
         self._draw_info()
         self.fig.canvas.draw_idle()
 

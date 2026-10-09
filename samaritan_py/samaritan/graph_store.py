@@ -55,6 +55,13 @@ class AssetGraph:
         rels = [Relationship(gateway_id, d.id, "LOCAL_ADJACENCY") for d in devices]
         return self.ingest([gw, *devices], rels)
 
+    def merge(self, other: "AssetGraph") -> IngestResult:
+        """Copy every asset and relationship of `other` into this graph (idempotent)."""
+        ents = [Asset(n, d.get("type", "Unknown"), d.get("threat_level", "Unknown"))
+                for n, d in other.g.nodes(data=True)]
+        rels = [Relationship(u, v, k) for u, v, k in other.g.edges(keys=True)]
+        return self.ingest(ents, rels)
+
     def clear(self) -> None:
         self.g.clear()
 

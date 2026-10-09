@@ -62,6 +62,32 @@ class OsintTests(unittest.TestCase):
         self.assertEqual(sum(a.type == "Subdomain" for a in e), 5)
 
 
+class FetchFallbackTests(unittest.TestCase):
+    class R:
+        def __init__(self, code, data=None):
+            self.status_code, self._d, self.url = code, data, "u"
+        def raise_for_status(self):
+            if self.status_code >= 400: raise requests.HTTPError("bad", response=self)
+        def json(self): return self._d
+
+    def test_retry_then_success(self):
+        from unittest import mock
+        from samaritan import osint
+        seq = [self.R(502), self.R(200, [{"name_value": "a.example.org"}])]
+        with mock.patch.object(osint.requests, "get", side_effect=seq), mock.patch.object(osint.time, "sleep"):
+            self.assertEqual(osint.fetch_crtsh("example.org", log=lambda _: None)[0]["name_value"], "a.example.org")
+
+    def test_fallback_to_certspotter(self):
+        from unittest import mock
+        from samaritan import osint
+        def fake_get(url, **kw):
+            if "crt.sh" in url: return self.R(502)
+            return self.R(200, [{"dns_names": ["x.example.org", "y.example.org"]}])
+        with mock.patch.object(osint.requests, "get", side_effect=fake_get), mock.patch.object(osint.time, "sleep"):
+            recs = osint.fetch_ct_records("example.org", log=lambda _: None)
+        self.assertEqual(osint.extract_subdomains(recs), ["x.example.org", "y.example.org"])
+
+
 class ArpTests(unittest.TestCase):
     def test_linux(self):
         self.assertEqual([d.id for d in parse_arp_output(ARP_LINUX)], ["192.168.1.1", "192.168.1.7"])
@@ -135,6 +161,57 @@ class VisualTests(unittest.TestCase):
         nm = NetworkMap(build_demo_graph().g, focus="example.org")
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "m.png"); nm.save(p); self.assertGreater(os.path.getsize(p), 10_000)
+
+
+class UtilsTests(unittest.TestCase):
+    def test_normalize_urls(self):
+        from samaritan.utils import normalize_target as n
+        self.assertEqual(n("https://www.Example.com:8443/a/b?q=1#x"), "example.com")
+        self.assertEqual(n("  Example.COM. "), "example.com")
+        self.assertEqual(n("sub.domain.co.uk/path"), "sub.domain.co.uk")
+        self.assertEqual(n("http://user:pw@test-corp.io/"), "test-corp.io")
+
+    def test_normalize_rejects(self):
+        from samaritan.utils import normalize_target as n
+        for bad in ("", "   ", "not a domain", "localhost", "192.168.1.1", "http://", "a..b.com", "-bad-.com"):
+            with self.assertRaises(ValueError, msg=bad):
+                n(bad)
+
+
+class MergeTests(unittest.TestCase):
+    def test_merge_is_idempotent(self):
+        a = AssetGraph(); a.merge_asset(Asset("keep", "Domain", "Elevated"))
+        b = build_demo_graph()
+        r1 = a.merge(b); r2 = a.merge(b)
+        self.assertEqual(r1.nodes_added, len(b)); self.assertEqual(r2.nodes_added, 0)
+        self.assertEqual(r2.edges_added, 0); self.assertIn("keep", a.g)
+
+
+@unittest.skipUnless(os.environ.get("SAMARITAN_GUI_TEST"), "set SAMARITAN_GUI_TEST=1 (needs a display)")
+class GuiSmokeTests(unittest.TestCase):
+    def test_gui_flow(self):
+        from unittest import mock
+        from tkinter import messagebox
+        from samaritan import gui
+        with tempfile.TemporaryDirectory() as d:
+            app = gui.App(os.path.join(d, "g.json"))
+            try:
+                app.on_demo(); app.update()
+                self.assertEqual(len(app.graph), 21)
+                app.select_node("203.0.113.10"); self.assertEqual(app.focus, "203.0.113.10")
+                app.select_node("203.0.113.10"); self.assertIsNone(app.focus)          # toggle off
+                app.filter_vars["show_infrastructure"].set(False); app.update()
+                self.assertTrue(all(app.graph.g.nodes[n]["type"] != "Infrastructure" for n in app.view))
+                app.filter_vars["show_infrastructure"].set(True)
+                app.nb.select(1); app.update(); self.assertEqual(len(app.m_tree.get_children()), 21)
+                with mock.patch.object(messagebox, "askyesno", return_value=False):
+                    app.on_reset()
+                self.assertEqual(len(app.graph), 21)                                     # cancelled
+                with mock.patch.object(messagebox, "askyesno", return_value=True):
+                    app.on_reset()
+                self.assertEqual(len(app.graph), 0)
+            finally:
+                app.destroy()
 
 
 if __name__ == "__main__":

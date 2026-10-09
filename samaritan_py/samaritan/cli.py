@@ -21,7 +21,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="samaritan", description="Samaritan Asset Index (Python edition). "
                                 "Use only against assets you are authorised to assess.")
     p.add_argument("--db", default=DEFAULT_DB, help=f"graph file (default {DEFAULT_DB})")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")   # no sub-command -> open the GUI
+    sub.add_parser("gui", help="open the desktop GUI (default when no command is given)")
 
     s = sub.add_parser("sweep", help="OSINT sweep: crt.sh subdomains + DNS resolution")
     s.add_argument("target"); s.add_argument("--limit", type=int, default=10,
@@ -47,6 +48,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.cmd in (None, "gui"):
+        from .gui import run          # imported lazily so the CLI works without a display
+        run(args.db)
+        return 0
     graph = AssetGraph.load(args.db)
 
     if args.cmd == "sweep":
